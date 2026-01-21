@@ -1,0 +1,14 @@
+{
+  "name": "trumpnews-bot",
+  "version": "1.0.0",
+  "description": "Discord webhook bot for TipRanks Trump dashboard news.",
+  "main": "bot.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "playwright": "^1.49.0"
+  }
+}
