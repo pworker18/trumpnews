@@ -25,9 +25,23 @@ const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
 const maxMessages = Number.parseInt(process.env.MAX_NEWS_MESSAGES, 10);
 const tag = process.env.DISCORD_TAG;
 const logFilePath = process.env.LOG_FILE;
+const headless = process.env.HEADLESS !== 'false';
+const navigationTimeoutMs = Number.parseInt(process.env.NAVIGATION_TIMEOUT_MS || '60000', 10);
+const pageWaitTimeoutMs = Number.parseInt(process.env.PAGE_WAIT_TIMEOUT_MS || '45000', 10);
+const userAgent = process.env.USER_AGENT;
 
 if (Number.isNaN(maxMessages) || maxMessages <= 0) {
   console.error('MAX_NEWS_MESSAGES must be a positive integer.');
+  process.exit(1);
+}
+
+if (Number.isNaN(navigationTimeoutMs) || navigationTimeoutMs <= 0) {
+  console.error('NAVIGATION_TIMEOUT_MS must be a positive integer.');
+  process.exit(1);
+}
+
+if (Number.isNaN(pageWaitTimeoutMs) || pageWaitTimeoutMs <= 0) {
+  console.error('PAGE_WAIT_TIMEOUT_MS must be a positive integer.');
   process.exit(1);
 }
 
@@ -92,6 +106,39 @@ const buildDiscordMessage = (item) => {
     formatField('Affected Securities', item.affectedSecurities),
     formatField('Sector', item.sector)
   ].join('\n');
+};
+
+const createContextOptions = () => {
+  const options = {
+    locale: 'en-US',
+    timezoneId: 'America/New_York',
+    viewport: { width: 1280, height: 720 }
+  };
+
+  if (userAgent) {
+    options.userAgent = userAgent;
+  }
+
+  return options;
+};
+
+const waitForNewsTable = async (page, attempt) => {
+  try {
+    await page.waitForSelector('table tbody tr', { timeout: pageWaitTimeoutMs });
+    return true;
+  } catch (error) {
+    const content = await page.content();
+    const blocked = content.includes('cf-challenge') || content.includes('Attention Required');
+
+    if (blocked && attempt < 2) {
+      console.warn('Cloudflare challenge detected, waiting for clearance...');
+      await page.waitForTimeout(10000);
+      await page.reload({ waitUntil: 'domcontentloaded', timeout: navigationTimeoutMs });
+      return waitForNewsTable(page, attempt + 1);
+    }
+
+    return false;
+  }
 };
 
 const extractNewsItems = async (page, limit) => {
@@ -179,12 +226,21 @@ const extractNewsItems = async (page, limit) => {
 const run = async () => {
   const processedIds = new Set(loadProcessedIds());
 
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
+  const browser = await chromium.launch({ headless });
+  const context = await browser.newContext(createContextOptions());
+  const page = await context.newPage();
 
   try {
-    await page.goto(siteUrl, { waitUntil: 'networkidle' });
-    await page.waitForSelector('table tbody tr', { timeout: 30000 });
+    const response = await page.goto(siteUrl, { waitUntil: 'domcontentloaded', timeout: navigationTimeoutMs });
+    const status = response?.status();
+    if (status && status >= 400) {
+      throw new Error(`Site responded with HTTP ${status}.`);
+    }
+
+    const tableReady = await waitForNewsTable(page, 0);
+    if (!tableReady) {
+      throw new Error('Unable to locate news table; the site may be blocking automated access.');
+    }
 
     const items = await extractNewsItems(page, maxMessages);
     const newItems = [];
@@ -205,6 +261,7 @@ const run = async () => {
     writeProcessedIds(Array.from(processedIds));
     console.log(`Processed ${newItems.length} new item(s).`);
   } finally {
+    await context.close();
     await browser.close();
   }
 };
