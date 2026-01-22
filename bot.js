@@ -503,14 +503,12 @@ const waitForReactTable = async (page) => {
   return scroller;
 };
 
-// NEW: Extract full tweet text by hovering over the icon button
+// Extract full tweet text by programmatically triggering hover
 const extractFullTweetFromTooltip = async (page, rowIndex) => {
   try {
-    // Aggressively close any popups before hovering
     await closeTipRanksPopup(page);
     await page.waitForTimeout(100);
     
-    // Find the row group first to scroll it into view
     const rowGroup = page.locator(`.rt-tbody .rt-tr-group:nth-child(${rowIndex + 1})`).first();
     const rowExists = await rowGroup.count();
     if (rowExists === 0) {
@@ -518,7 +516,7 @@ const extractFullTweetFromTooltip = async (page, rowIndex) => {
       return '';
     }
 
-    // Scroll the entire row into the CENTER of the viewport to avoid ads at bottom
+    // Scroll row into view
     await page.evaluate((idx) => {
       const row = document.querySelectorAll('.rt-tbody .rt-tr-group')[idx];
       if (row) {
@@ -527,69 +525,101 @@ const extractFullTweetFromTooltip = async (page, rowIndex) => {
     }, rowIndex);
     await page.waitForTimeout(300);
     
-    // Find the VISIBLE button with icon-twoBubbles (not the mobile hidden one)
-    // There are two buttons - we want the one with class mobile_displaynone (visible on desktop)
-    let button = rowGroup.locator('button:has(i.icon-twoBubbles).mobile_displaynone').first();
-    let buttonCount = await button.count();
-    
-    if (buttonCount === 0) {
-      // Fallback: try any button with icon-twoBubbles
-      button = rowGroup.locator('button:has(i.icon-twoBubbles)').last(); // Use .last() to get the visible one
-      buttonCount = await button.count();
-    }
-    
-    if (buttonCount === 0) {
-      console.log(`Row ${rowIndex}: No full text button found`);
-      return '';
-    }
-
-    // Get button properties
-    const buttonProps = await button.evaluate((btn) => ({
-      visible: btn.offsetParent !== null,
-      display: window.getComputedStyle(btn).display,
-      visibility: window.getComputedStyle(btn).visibility,
-      opacity: window.getComputedStyle(btn).opacity,
-      className: btn.className
-    }));
-
-    if (!buttonProps.visible) {
-      console.log(`Row ${rowIndex}: Button not actually visible (offsetParent is null)`);
-      return '';
-    }
-
-    // Get bounding box
-    const box = await button.boundingBox();
-    if (!box) {
-      console.log(`Row ${rowIndex}: Could not get button bounding box`);
-      return '';
-    }
-    
-    console.log(`Row ${rowIndex}: Hovering over button...`);
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.waitForTimeout(800); // Wait for tooltip to appear
-
-    // Extract text from the tooltip
-    const fullTweet = await page.evaluate(() => {
-      // Find the tippy tooltip that's currently visible
-      const tooltip = document.querySelector('[data-tippy-root] .tippy-box[data-state="visible"] span[title]');
-      if (tooltip) {
-        return tooltip.getAttribute('title') || '';
+    // Programmatically trigger tooltip and extract text
+    const fullTweet = await page.evaluate((idx) => {
+      const row = document.querySelectorAll('.rt-tbody .rt-tr-group')[idx];
+      if (!row) return '';
+      
+      // Find the button with icon-twoBubbles (desktop version)
+      let button = row.querySelector('button:has(i.icon-twoBubbles), button i.icon-twoBubbles');
+      
+      // If button with icon wasn't found, try finding by class directly
+      if (!button) {
+        const allButtons = row.querySelectorAll('button');
+        for (const btn of allButtons) {
+          const icon = btn.querySelector('i.icon-twoBubbles');
+          if (icon && window.getComputedStyle(btn).display !== 'none') {
+            button = btn;
+            break;
+          }
+        }
       }
       
-      // Fallback: look for any visible tippy tooltip
-      const anyTooltip = document.querySelector('[data-tippy-root] span[title]');
-      if (anyTooltip) {
-        return anyTooltip.getAttribute('title') || '';
+      if (!button) return '';
+      
+      // Trigger mouse events to show tooltip
+      const mouseoverEvent = new MouseEvent('mouseover', { 
+        bubbles: true, 
+        cancelable: true,
+        view: window 
+      });
+      const mouseenterEvent = new MouseEvent('mouseenter', { 
+        bubbles: true, 
+        cancelable: true,
+        view: window 
+      });
+      
+      button.dispatchEvent(mouseenterEvent);
+      button.dispatchEvent(mouseoverEvent);
+      
+      // Wait synchronously for tooltip to appear
+      const startTime = Date.now();
+      const maxWait = 1500; // 1.5 seconds max wait
+      
+      while (Date.now() - startTime < maxWait) {
+        // Check multiple possible tooltip selectors
+        let tooltip = document.querySelector('[data-tippy-root] .tippy-box[data-state="visible"] span[title]');
+        
+        if (!tooltip) {
+          tooltip = document.querySelector('[data-tippy-root] .tippy-box span[title]');
+        }
+        
+        if (!tooltip) {
+          tooltip = document.querySelector('[data-tippy-root] span[title]');
+        }
+        
+        if (!tooltip) {
+          tooltip = document.querySelector('.tippy-content span[title]');
+        }
+        
+        if (tooltip) {
+          const text = tooltip.getAttribute('title') || tooltip.textContent || '';
+          
+          // Clean up - trigger mouseout
+          const mouseoutEvent = new MouseEvent('mouseout', { 
+            bubbles: true, 
+            cancelable: true,
+            view: window 
+          });
+          const mouseleaveEvent = new MouseEvent('mouseleave', { 
+            bubbles: true, 
+            cancelable: true,
+            view: window 
+          });
+          
+          button.dispatchEvent(mouseoutEvent);
+          button.dispatchEvent(mouseleaveEvent);
+          
+          return text;
+        }
+        
+        // Small delay in busy loop
+        const now = Date.now();
+        while (Date.now() - now < 50) {
+          // Busy wait for 50ms
+        }
       }
       
-      // Another fallback: check the tippy content directly
-      const tippyContent = document.querySelector('[data-tippy-root] .tippy-content span');
-      if (tippyContent) {
-        return tippyContent.getAttribute('title') || tippyContent.textContent || '';
-      }
+      // Timeout - clean up anyway
+      const mouseoutEvent = new MouseEvent('mouseout', { 
+        bubbles: true, 
+        cancelable: true,
+        view: window 
+      });
+      button.dispatchEvent(mouseoutEvent);
       
       return '';
-    });
+    }, rowIndex);
 
     if (fullTweet) {
       console.log(`Row ${rowIndex}: ✓ Extracted (${fullTweet.length} chars)`);
@@ -597,15 +627,10 @@ const extractFullTweetFromTooltip = async (page, rowIndex) => {
       console.log(`Row ${rowIndex}: ✗ No tooltip found`);
     }
 
-    // Hover out to dismiss the tooltip before moving to next row
-    await page.mouse.move(0, 0);
-    await page.waitForTimeout(200); // Wait for tooltip to disappear
-
+    await page.waitForTimeout(200);
     return fullTweet;
   } catch (err) {
     console.warn(`Row ${rowIndex}: Error:`, err.message);
-    // Try to hover out even on error
-    await page.mouse.move(0, 0).catch(() => {});
     return '';
   }
 };
@@ -660,28 +685,13 @@ const extractAllCurrentlyLoadedRows = async (page) => {
     });
   });
 
-  // Now extract full tweet text for each row by hovering
+  // Now extract full tweet text for each row using programmatic hover
   console.log(`Extracting full tweets for ${rowsData.length} rows...`);
   
   // Scroll back to the top of the table to ensure first rows are visible
   const firstRow = page.locator('.rt-tbody .rt-tr-group').first();
   await firstRow.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
   await page.waitForTimeout(500);
-  
-  // Debug: Check the structure of the first row
-  const firstRowDebug = await page.evaluate(() => {
-    const row = document.querySelector('.rt-tbody .rt-tr-group .rt-tr');
-    if (!row) return 'No row found';
-    const cells = Array.from(row.querySelectorAll('.rt-td'));
-    return cells.map((cell, i) => ({
-      index: i,
-      classes: cell.className,
-      hasButton: cell.querySelector('button') !== null,
-      buttonClasses: cell.querySelector('button')?.className || 'no button',
-      html: cell.innerHTML.substring(0, 150)
-    }));
-  });
-  console.log('First row structure:', JSON.stringify(firstRowDebug, null, 2));
   
   for (let i = 0; i < rowsData.length; i++) {
     await closeTipRanksPopup(page);
@@ -702,7 +712,7 @@ const extractAllCurrentlyLoadedRows = async (page) => {
     
     // Small delay between rows to avoid overwhelming the page
     if (i < rowsData.length - 1) {
-      await page.waitForTimeout(200);
+      await page.waitForTimeout(250);
     }
   }
   
@@ -745,150 +755,4 @@ const clickShowMoreUntil = async (page, targetCount) => {
       }
     }
 
-    const nowCount = await getRowCount(page);
-    if (nowCount >= targetCount) break;
-
-    // if it didn't grow, stop to avoid infinite loop
-    if (!grew) break;
-  }
-};
-
-const run = async () => {
-  const processedIds = new Set(loadProcessedIds());
-
-  const browser = await chromium.launch({
-    headless,
-    args: ['--disable-blink-features=AutomationControlled', '--headless=new']
-  });
-
-  const context = await browser.newContext(createContextOptions());
-
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-  });
-
-  const page = await context.newPage();
-
-  try {
-    await installNavigationGuard(page, siteUrl);
-
-    const response = await page.goto(siteUrl, {
-      waitUntil: 'domcontentloaded',
-      timeout: navigationTimeoutMs
-    });
-
-    const status = response?.status();
-    if (status && status >= 400) throw new Error(`Site responded with HTTP ${status}.`);
-
-    await page.waitForLoadState('networkidle').catch(() => {});
-    
-    // Aggressively dismiss all overlays and popups multiple times
-    for (let i = 0; i < 3; i++) {
-      await dismissOverlaysStrict(page);
-      await closeTipRanksPopup(page);
-      await page.waitForTimeout(300);
-    }
-
-    await scrollToRecentTweets(page);
-    await waitForReactTable(page);
-
-    // ✅ Load enough rows by clicking Show More
-    await clickShowMoreUntil(page, maxMessages);
-
-    const items = await extractAllCurrentlyLoadedRows(page);
-    const sliced = items.slice(0, maxMessages);
-
-    const newItems = [];
-    for (const item of sliced) {
-      const id = createMessageId(item);
-      if (!processedIds.has(id)) newItems.push({ id, item });
-    }
-
-    // Send oldest-first, rotate webhooks per message in THIS run
-    const ordered = newItems.reverse();
-
-    // Translate summaries and full tweets separately
-    if (ordered.length > 0) {
-      console.log(`Attempting to translate content for ${ordered.length} items...`);
-      
-      // Translate summaries (all rows have summaries)
-      const summaries = ordered.map((e) => e.item.summary);
-      const translatedSummaries = await translateSummariesWithGemini(summaries);
-      
-      // Translate full tweets (only for rows that have them)
-      const fullTweets = ordered.map((e) => e.item.fullTweet).filter(Boolean);
-      let translatedFullTweets = null;
-      
-      if (fullTweets.length > 0) {
-        console.log(`Attempting to translate ${fullTweets.length} full tweets...`);
-        translatedFullTweets = await translateSummariesWithGemini(fullTweets);
-      }
-      
-      // Apply translations ONLY if translation succeeded
-      if (translatedSummaries !== null) {
-        console.log('✓ Successfully translated summaries');
-        for (let i = 0; i < ordered.length; i++) {
-          ordered[i].item.summary = translatedSummaries[i] || ordered[i].item.summary;
-        }
-      } else {
-        console.log('✗ Using original summaries (translation failed)');
-      }
-      
-      if (translatedFullTweets !== null && fullTweets.length > 0) {
-        console.log('✓ Successfully translated full tweets');
-        let fullTweetIndex = 0;
-        for (let i = 0; i < ordered.length; i++) {
-          if (ordered[i].item.fullTweet) {
-            ordered[i].item.fullTweet = translatedFullTweets[fullTweetIndex] || ordered[i].item.fullTweet;
-            fullTweetIndex++;
-          }
-        }
-      } else if (fullTweets.length > 0) {
-        console.log('✗ Using original full tweets (translation failed)');
-      }
-    }
-
-    for (let i = 0; i < ordered.length; i++) {
-      const entry = ordered[i];
-      const webhookUrl = webhookUrls[i % webhookUrls.length];
-      
-      // Format message returns an array of chunks if message is too long
-      const messageChunks = formatMessage(entry.item);
-      
-      // Send all chunks for this message
-      for (let chunkIndex = 0; chunkIndex < messageChunks.length; chunkIndex++) {
-        const chunk = messageChunks[chunkIndex];
-        
-        // Add part indicator if message was split
-        const chunkContent = messageChunks.length > 1 
-          ? `**[Part ${chunkIndex + 1}/${messageChunks.length}]**\n${chunk}`
-          : chunk;
-        
-        await sendDiscordMessage(webhookUrl, chunkContent);
-        
-        // Small delay between chunks of the same message
-        if (chunkIndex < messageChunks.length - 1) {
-          await sleep(300);
-        }
-      }
-      
-      processedIds.add(entry.id);
-      
-      // Delay between different messages
-      if (i < ordered.length - 1) {
-        await sleep(450);
-      }
-    }
-
-    writeProcessedIds(Array.from(processedIds));
-    console.log(`✓ Processed ${newItems.length} new item(s).`);
-  } finally {
-    await context.close();
-    await browser.close();
-  }
-};
-
-run().catch((error) => {
-  console.error('Bot failed:', error);
-  process.exit(1);
-});
+    const nowCount = await getRowCount(

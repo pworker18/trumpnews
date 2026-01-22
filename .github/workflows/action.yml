@@ -1,4 +1,4 @@
-name: 🍊 Trump-News
+name: Trump-News
 
 on:
   repository_dispatch:
