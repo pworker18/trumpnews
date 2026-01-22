@@ -571,26 +571,58 @@ const extractFullTweetFromTooltip = async (page, rowIndex) => {
     await button.dispatchEvent('mousemove').catch(() => {});
     await page.waitForTimeout(200);
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.waitForTimeout(600); // Wait for tooltip to appear
+    await page.waitForTimeout(300); // Wait for tooltip to appear
 
-    // Extract text from the tooltip
+    const clean = (text) => String(text || '').replace(/\s+/g, ' ').trim();
+
+    const tippyContent = await button.evaluate((btn) => {
+      const instance = btn?._tippy;
+      if (!instance) return '';
+      try {
+        instance.show?.();
+      } catch {}
+      const content = instance.props?.content;
+      if (!content) return '';
+      if (typeof content === 'string') return content;
+      return content.textContent || '';
+    });
+
+    if (tippyContent) {
+      return clean(tippyContent);
+    }
+
+    const directContent = await button.evaluate((btn) => {
+      return (
+        btn.getAttribute('data-tippy-content') ||
+        btn.getAttribute('title') ||
+        btn.getAttribute('aria-label') ||
+        ''
+      );
+    });
+
+    if (directContent) {
+      return clean(directContent);
+    }
+
     const fullTweet = await page.evaluate(() => {
+      const clean = (text) => String(text || '').replace(/\s+/g, ' ').trim();
+      // Extract text from the tooltip in the DOM
       // Find the tippy tooltip that's currently visible
       const tooltip = document.querySelector('[data-tippy-root] .tippy-box[data-state="visible"] span[title]');
       if (tooltip) {
-        return tooltip.getAttribute('title') || '';
+        return clean(tooltip.getAttribute('title') || '');
       }
       
       // Fallback: look for any visible tippy tooltip
       const anyTooltip = document.querySelector('[data-tippy-root] span[title]');
       if (anyTooltip) {
-        return anyTooltip.getAttribute('title') || '';
+        return clean(anyTooltip.getAttribute('title') || '');
       }
       
       // Another fallback: check the tippy content directly
       const tippyContent = document.querySelector('[data-tippy-root] .tippy-content span');
       if (tippyContent) {
-        return tippyContent.getAttribute('title') || tippyContent.textContent || '';
+        return clean(tippyContent.getAttribute('title') || tippyContent.textContent || '');
       }
       
       return '';
@@ -617,7 +649,50 @@ const extractFullTweetFromTooltip = async (page, rowIndex) => {
   }
 };
 
-const extractAllCurrentlyLoadedRows = async (page) => {
+const buildPayloadIndex = (payloadItems) => {
+  const clean = (text) => String(text || '').replace(/\s+/g, ' ').trim();
+  const index = new Map();
+
+  for (const item of payloadItems || []) {
+    const time = clean(item?.postTime);
+    const summary = clean(item?.postSummary);
+    if (!time || !summary) continue;
+    const key = `${time}|${summary}`;
+    if (!index.has(key)) {
+      index.set(key, item);
+    }
+  }
+
+  return { index, clean };
+};
+
+const findPayloadMatch = (row, payloadItems, payloadIndex, clean) => {
+  const rowTime = clean(row?.time);
+  const rowSummary = clean(row?.summary);
+  if (!rowTime || !rowSummary) return null;
+
+  const exactKey = `${rowTime}|${rowSummary}`;
+  if (payloadIndex.has(exactKey)) return payloadIndex.get(exactKey);
+
+  let fallback = null;
+  for (const item of payloadItems || []) {
+    const itemTime = clean(item?.postTime);
+    const itemSummary = clean(item?.postSummary);
+    if (!itemTime || !itemSummary) continue;
+
+    if (itemTime === rowTime && (itemSummary.startsWith(rowSummary) || rowSummary.startsWith(itemSummary))) {
+      return item;
+    }
+
+    if (!fallback && itemTime === rowTime) {
+      fallback = item;
+    }
+  }
+
+  return fallback;
+};
+
+const extractAllCurrentlyLoadedRows = async (page, payloadItems = []) => {
   const rowsData = await page.evaluate(() => {
     const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
     const groups = Array.from(document.querySelectorAll('.rt-tbody .rt-tr-group'));
@@ -690,8 +765,17 @@ const extractAllCurrentlyLoadedRows = async (page) => {
   });
   console.log('First row structure:', JSON.stringify(firstRowDebug, null, 2));
   
+  const { index: payloadIndex, clean: cleanPayload } = buildPayloadIndex(payloadItems);
+
   for (let i = 0; i < rowsData.length; i++) {
     await closeTipRanksPopup(page);
+
+    const payloadMatch = findPayloadMatch(rowsData[i], payloadItems, payloadIndex, cleanPayload);
+    if (payloadMatch?.postContent) {
+      rowsData[i].fullTweet = cleanPayload(payloadMatch.postContent);
+      console.log(`Row ${i}: ✓ Extracted from payload (${rowsData[i].fullTweet.length} chars)`);
+      continue;
+    }
     
     // Set a timeout for each row extraction to prevent hanging
     try {
@@ -715,6 +799,28 @@ const extractAllCurrentlyLoadedRows = async (page) => {
   
   console.log('Full tweet extraction complete');
   return rowsData;
+};
+
+const fetchTrumpDashboardPayload = async (page) => {
+  try {
+    const response = await page.request.get(
+      'https://tr-cdn.tipranks.com/research/prod/trump-dashboard/payload.json',
+      { timeout: navigationTimeoutMs }
+    );
+
+    if (!response.ok()) {
+      console.warn(`Payload request failed with status ${response.status()}`);
+      return [];
+    }
+
+    const data = await response.json();
+    const items = Array.isArray(data?.trumpDashboardList) ? data.trumpDashboardList : [];
+    console.log(`Loaded ${items.length} payload item(s)`);
+    return items;
+  } catch (err) {
+    console.warn('Failed to fetch payload:', err.message);
+    return [];
+  }
 };
 
 const getRowCount = async (page) => {
@@ -802,7 +908,8 @@ const run = async () => {
     // ✅ Load enough rows by clicking Show More
     await clickShowMoreUntil(page, maxMessages);
 
-    const items = await extractAllCurrentlyLoadedRows(page);
+    const payloadItems = await fetchTrumpDashboardPayload(page);
+    const items = await extractAllCurrentlyLoadedRows(page, payloadItems);
     const sliced = items.slice(0, maxMessages);
 
     const newItems = [];
