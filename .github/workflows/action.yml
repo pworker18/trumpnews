@@ -40,6 +40,9 @@ jobs:
           DISCORD_WEBHOOK_URL_2: ${{ vars.DISCORD_WEBHOOK_URL_2 }}
           DISCORD_WEBHOOK_URL_3:       ${{ vars.DISCORD_WEBHOOK_URL_3 }}
           GEMINI_API_KEY_1:         ${{ vars.GEMINI_API_KEY_1 }}
+          GEMINI_API_KEY_2:         ${{ vars.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3:         ${{ vars.GEMINI_API_KEY_3 }}
+          GEMINI_API_KEY_4:         ${{ vars.GEMINI_API_KEY_4 }}
           GEMINI_MODEL:         ${{ vars.GEMINI_MODEL }}
           TRANSLATE_TO:      ${{ vars.TRANSLATE_TO }}
           GEMINI_BATCH_SIZE: ${{ vars.GEMINI_BATCH_SIZE }}
