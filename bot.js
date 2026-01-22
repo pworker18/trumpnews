@@ -688,7 +688,26 @@ const fetchTrumpDashboardPayload = async (page) => {
     console.log(`   Parsed JSON successfully`);
     console.log(`   JSON root keys:`, Object.keys(data));
     
-    const items = Array.isArray(data?.trumpDashboardList) ? data.trumpDashboardList : [];
+    // Try multiple possible paths for the data
+    let items = [];
+    
+    // New structure: TrumpDashboard.data.list
+    if (data?.TrumpDashboard?.data?.list && Array.isArray(data.TrumpDashboard.data.list)) {
+      items = data.TrumpDashboard.data.list;
+      console.log(`   ✅ Found data at: TrumpDashboard.data.list`);
+    }
+    // Old structure: trumpDashboardList
+    else if (data?.trumpDashboardList && Array.isArray(data.trumpDashboardList)) {
+      items = data.trumpDashboardList;
+      console.log(`   ✅ Found data at: trumpDashboardList`);
+    }
+    else {
+      console.warn(`   ⚠️  Could not find data at expected paths`);
+      console.warn(`   Available paths checked: TrumpDashboard.data.list, trumpDashboardList`);
+      console.warn(`   Full JSON structure:`, JSON.stringify(data, null, 2).substring(0, 500));
+      return [];
+    }
+    
     console.log(`   trumpDashboardList found: ${items.length} items`);
     
     if (items.length === 0) {
