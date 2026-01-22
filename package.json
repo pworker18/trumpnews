@@ -8,6 +8,7 @@
     "start": "node bot.js"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "dotenv": "^16.4.5",
     "playwright": "^1.49.0"
   }
