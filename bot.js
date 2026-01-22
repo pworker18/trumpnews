@@ -525,48 +525,101 @@ const extractFullTweetFromTooltip = async (page, rowIndex) => {
     }, rowIndex);
     await page.waitForTimeout(300);
     
-    const row = page.locator('.rt-tbody .rt-tr-group').nth(rowIndex);
-    const rowVisible = await row.isVisible().catch(() => false);
-    if (!rowVisible) {
-      console.log(`Row ${rowIndex}: Row not visible`);
-      return '';
-    }
-
-    const bubbleIcon = page.locator('i.icon-twoBubbles');
-    const button = row.locator('button', { has: bubbleIcon }).first();
-    const buttonVisible = await button.isVisible().catch(() => false);
-    if (!buttonVisible) {
-      console.log(`Row ${rowIndex}: Tooltip button not found`);
-      return '';
-    }
-
-    // Force hover state programmatically to trigger tooltip in headless mode
-    await button.dispatchEvent('pointerover').catch(() => {});
-    await button.dispatchEvent('mouseenter').catch(() => {});
-    await button.dispatchEvent('mouseover').catch(() => {});
-
-    const tooltipSelectors = [
-      '[data-tippy-root] .tippy-box[data-state="visible"] span[title]',
-      '[data-tippy-root] .tippy-box span[title]',
-      '[data-tippy-root] span[title]',
-      '.tippy-content span[title]'
-    ];
-
-    const fullTweet = await page
-      .waitForFunction((selectors) => {
-        for (const selector of selectors) {
-          const tooltip = document.querySelector(selector);
-          if (tooltip) {
-            return tooltip.getAttribute('title') || tooltip.textContent || '';
+    // Programmatically trigger tooltip and extract text
+    const fullTweet = await page.evaluate((idx) => {
+      const row = document.querySelectorAll('.rt-tbody .rt-tr-group')[idx];
+      if (!row) return '';
+      
+      // Find the button with icon-twoBubbles (desktop version)
+      let button = row.querySelector('button:has(i.icon-twoBubbles), button i.icon-twoBubbles');
+      
+      // If button with icon wasn't found, try finding by class directly
+      if (!button) {
+        const allButtons = row.querySelectorAll('button');
+        for (const btn of allButtons) {
+          const icon = btn.querySelector('i.icon-twoBubbles');
+          if (icon && window.getComputedStyle(btn).display !== 'none') {
+            button = btn;
+            break;
           }
         }
-        return '';
-      }, tooltipSelectors, { timeout: 2000 })
-      .then((handle) => handle.jsonValue())
-      .catch(() => '');
-
-    await button.dispatchEvent('mouseout').catch(() => {});
-    await button.dispatchEvent('mouseleave').catch(() => {});
+      }
+      
+      if (!button) return '';
+      
+      // Trigger mouse events to show tooltip
+      const mouseoverEvent = new MouseEvent('mouseover', { 
+        bubbles: true, 
+        cancelable: true,
+        view: window 
+      });
+      const mouseenterEvent = new MouseEvent('mouseenter', { 
+        bubbles: true, 
+        cancelable: true,
+        view: window 
+      });
+      
+      button.dispatchEvent(mouseenterEvent);
+      button.dispatchEvent(mouseoverEvent);
+      
+      // Wait synchronously for tooltip to appear
+      const startTime = Date.now();
+      const maxWait = 1500; // 1.5 seconds max wait
+      
+      while (Date.now() - startTime < maxWait) {
+        // Check multiple possible tooltip selectors
+        let tooltip = document.querySelector('[data-tippy-root] .tippy-box[data-state="visible"] span[title]');
+        
+        if (!tooltip) {
+          tooltip = document.querySelector('[data-tippy-root] .tippy-box span[title]');
+        }
+        
+        if (!tooltip) {
+          tooltip = document.querySelector('[data-tippy-root] span[title]');
+        }
+        
+        if (!tooltip) {
+          tooltip = document.querySelector('.tippy-content span[title]');
+        }
+        
+        if (tooltip) {
+          const text = tooltip.getAttribute('title') || tooltip.textContent || '';
+          
+          // Clean up - trigger mouseout
+          const mouseoutEvent = new MouseEvent('mouseout', { 
+            bubbles: true, 
+            cancelable: true,
+            view: window 
+          });
+          const mouseleaveEvent = new MouseEvent('mouseleave', { 
+            bubbles: true, 
+            cancelable: true,
+            view: window 
+          });
+          
+          button.dispatchEvent(mouseoutEvent);
+          button.dispatchEvent(mouseleaveEvent);
+          
+          return text;
+        }
+        
+        // Small delay in busy loop
+        const now = Date.now();
+        while (Date.now() - now < 50) {
+          // Busy wait for 50ms
+        }
+      }
+      
+      // Timeout - clean up anyway
+      const mouseoutEvent = new MouseEvent('mouseout', { 
+        bubbles: true, 
+        cancelable: true,
+        view: window 
+      });
+      button.dispatchEvent(mouseoutEvent);
+      
+      return '';
+    }, rowIndex);
 
     if (fullTweet) {
       console.log(`Row ${rowIndex}: ✓ Extracted (${fullTweet.length} chars)`);
