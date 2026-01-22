@@ -602,7 +602,23 @@ const extractAllCurrentlyLoadedRows = async (page, payloadItems = []) => {
 
   console.log(`Extracting full tweets for ${rowsData.length} rows from payload...`);
   
+  if (rowsData.length > 0) {
+    console.log(`\n📊 Sample row from page:`);
+    console.log(`   Time: "${rowsData[0].time}"`);
+    console.log(`   Sentiment: "${rowsData[0].sentiment}"`);
+    console.log(`   Summary: "${rowsData[0].summary?.substring(0, 80)}..."`);
+  }
+  
   const indices = buildPayloadIndex(payloadItems);
+  
+  console.log(`\n📑 Payload index summary:`);
+  console.log(`   Time index size: ${indices.timeIndex.size} unique times`);
+  console.log(`   Summary index size: ${indices.summaryIndex.size} unique summaries`);
+  if (indices.timeIndex.size > 0) {
+    const firstTime = Array.from(indices.timeIndex.keys())[0];
+    console.log(`   First indexed time: "${firstTime}"`);
+    console.log(`   Items at that time: ${indices.timeIndex.get(firstTime).length}`);
+  }
   
   let payloadMatchCount = 0;
   let noMatchCount = 0;
@@ -635,23 +651,66 @@ const extractAllCurrentlyLoadedRows = async (page, payloadItems = []) => {
 };
 
 const fetchTrumpDashboardPayload = async (page) => {
+  console.log('\n📥 Fetching trump-dashboard payload.json...');
+  console.log(`   URL: https://tr-cdn.tipranks.com/research/prod/trump-dashboard/payload.json`);
+  
   try {
     const response = await page.request.get(
       'https://tr-cdn.tipranks.com/research/prod/trump-dashboard/payload.json',
       { timeout: navigationTimeoutMs }
     );
 
+    console.log(`   Response status: ${response.status()}`);
+    const headers = response.headers();
+    console.log(`   Content-Type: ${headers['content-type'] || 'not set'}`);
+    console.log(`   Content-Length: ${headers['content-length'] || 'not set'}`);
+
     if (!response.ok()) {
-      console.warn(`Payload request failed with status ${response.status()}`);
+      console.error(`   ❌ Payload request failed with HTTP ${response.status()}`);
+      const bodyText = await response.text().catch(() => 'Could not read response body');
+      console.error(`   Response body (first 500 chars): ${bodyText.substring(0, 500)}`);
       return [];
     }
 
-    const data = await response.json();
+    const bodyText = await response.text();
+    console.log(`   ✅ Response received: ${bodyText.length} characters`);
+    console.log(`   Response preview (first 400 chars):\n${bodyText.substring(0, 400)}\n`);
+
+    let data;
+    try {
+      data = JSON.parse(bodyText);
+    } catch (parseErr) {
+      console.error(`   ❌ Failed to parse JSON:`, parseErr.message);
+      console.error(`   Raw body: ${bodyText.substring(0, 200)}`);
+      return [];
+    }
+
+    console.log(`   Parsed JSON successfully`);
+    console.log(`   JSON root keys:`, Object.keys(data));
+    
     const items = Array.isArray(data?.trumpDashboardList) ? data.trumpDashboardList : [];
-    console.log(`Loaded ${items.length} payload item(s)`);
+    console.log(`   trumpDashboardList found: ${items.length} items`);
+    
+    if (items.length === 0) {
+      console.warn(`   ⚠️  trumpDashboardList is empty or missing`);
+      console.warn(`   Full JSON structure:`, JSON.stringify(data, null, 2).substring(0, 500));
+    } else {
+      console.log(`\n   Sample of first item:`);
+      const first = items[0];
+      console.log(`      postDate: "${first?.postDate}"`);
+      console.log(`      postTime: "${first?.postTime}"`);
+      console.log(`      postSummary: "${first?.postSummary?.substring(0, 80)}..."`);
+      console.log(`      postContent: "${first?.postContent?.substring(0, 80)}..."`);
+      console.log(`      sectors: "${first?.sectors}"`);
+      console.log(`      stocks: ${first?.stocks?.length || 0} stock(s)`);
+    }
+    
+    console.log(`\n   ✅ Successfully loaded ${items.length} payload item(s)\n`);
     return items;
   } catch (err) {
-    console.warn('Failed to fetch payload:', err.message);
+    console.error(`\n   ❌ Exception while fetching payload:`, err.message);
+    console.error(`   Error type:`, err.constructor.name);
+    console.error(`   Stack trace:`, err.stack);
     return [];
   }
 };
@@ -736,7 +795,10 @@ const run = async () => {
     // Load enough rows by clicking Show More
     await clickShowMoreUntil(page, maxMessages);
 
+    console.log('\n🔍 Attempting to fetch payload.json...');
     const payloadItems = await fetchTrumpDashboardPayload(page);
+    console.log(`📦 Payload fetch complete: ${payloadItems.length} items returned\n`);
+    
     const items = await extractAllCurrentlyLoadedRows(page, payloadItems);
     const sliced = items.slice(0, maxMessages);
 
