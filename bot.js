@@ -758,7 +758,7 @@ const run = async () => {
 
   const browser = await chromium.launch({
     headless,
-    args: ['--disable-blink-features=AutomationControlled']
+    args: ['--disable-blink-features=AutomationControlled', '--headless=new']
   });
 
   const context = await browser.newContext(createContextOptions());
