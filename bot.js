@@ -651,84 +651,66 @@ const extractAllCurrentlyLoadedRows = async (page, payloadItems = []) => {
 };
 
 const fetchTrumpDashboardPayload = async (page) => {
-  console.log('\n📥 Extracting trump-dashboard payload from network requests...');
+  console.log('\n📥 Fetching trump-dashboard payload.json...');
+  console.log(`   URL: https://tr-cdn.tipranks.com/research/prod/trump-dashboard/payload.json`);
   
-  // Check if we already captured it during page navigation
-  const capturedPayload = page._trumpDashboardPayload;
-  
-  if (capturedPayload) {
-    console.log('   ✅ Using payload captured during page load');
-    const items = Array.isArray(capturedPayload?.trumpDashboardList) ? capturedPayload.trumpDashboardList : [];
-    console.log(`   Found ${items.length} items in trumpDashboardList`);
-    
-    if (items.length > 0) {
-      console.log(`\n   Sample of first item:`);
-      const first = items[0];
-      console.log(`      postTime: "${first?.postTime}"`);
-      console.log(`      postSummary: "${first?.postSummary?.substring(0, 80)}..."`);
-      console.log(`      postContent: "${first?.postContent?.substring(0, 80)}..."`);
-    }
-    
-    console.log(`\n   ✅ Successfully using ${items.length} payload item(s)\n`);
-    return items;
-  }
-  
-  // If not captured yet, wait a bit more for network requests
-  console.log('   ⏳ Waiting for payload.json network request...');
-  await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-    console.log('   Network not fully idle, continuing anyway...');
-  });
-  
-  await page.waitForTimeout(1000);
-  
-  // Check again after waiting
-  const capturedAfterWait = page._trumpDashboardPayload;
-  if (capturedAfterWait) {
-    console.log('   ✅ Payload captured after waiting');
-    const items = Array.isArray(capturedAfterWait?.trumpDashboardList) ? capturedAfterWait.trumpDashboardList : [];
-    console.log(`\n   ✅ Successfully using ${items.length} payload item(s)\n`);
-    return items;
-  }
-  
-  // Method 2: Direct fetch using Playwright's request context
-  console.log('   📡 Attempting direct fetch via Playwright...');
   try {
     const response = await page.request.get(
       'https://tr-cdn.tipranks.com/research/prod/trump-dashboard/payload.json',
-      { 
-        timeout: navigationTimeoutMs,
-        headers: {
-          'Referer': siteUrl,
-          'Accept': 'application/json, text/plain, */*',
-        }
-      }
+      { timeout: navigationTimeoutMs }
     );
 
     console.log(`   Response status: ${response.status()}`);
+    const headers = response.headers();
+    console.log(`   Content-Type: ${headers['content-type'] || 'not set'}`);
+    console.log(`   Content-Length: ${headers['content-length'] || 'not set'}`);
 
     if (!response.ok()) {
-      console.error(`   ❌ Direct fetch failed with HTTP ${response.status()}`);
+      console.error(`   ❌ Payload request failed with HTTP ${response.status()}`);
+      const bodyText = await response.text().catch(() => 'Could not read response body');
+      console.error(`   Response body (first 500 chars): ${bodyText.substring(0, 500)}`);
       return [];
     }
 
     const bodyText = await response.text();
     console.log(`   ✅ Response received: ${bodyText.length} characters`);
+    console.log(`   Response preview (first 400 chars):\n${bodyText.substring(0, 400)}\n`);
 
-    const data = JSON.parse(bodyText);
-    const items = Array.isArray(data?.trumpDashboardList) ? data.trumpDashboardList : [];
+    let data;
+    try {
+      data = JSON.parse(bodyText);
+    } catch (parseErr) {
+      console.error(`   ❌ Failed to parse JSON:`, parseErr.message);
+      console.error(`   Raw body: ${bodyText.substring(0, 200)}`);
+      return [];
+    }
+
+    console.log(`   Parsed JSON successfully`);
+    console.log(`   JSON root keys:`, Object.keys(data));
     
-    if (items.length > 0) {
+    const items = Array.isArray(data?.trumpDashboardList) ? data.trumpDashboardList : [];
+    console.log(`   trumpDashboardList found: ${items.length} items`);
+    
+    if (items.length === 0) {
+      console.warn(`   ⚠️  trumpDashboardList is empty or missing`);
+      console.warn(`   Full JSON structure:`, JSON.stringify(data, null, 2).substring(0, 500));
+    } else {
       console.log(`\n   Sample of first item:`);
       const first = items[0];
+      console.log(`      postDate: "${first?.postDate}"`);
       console.log(`      postTime: "${first?.postTime}"`);
       console.log(`      postSummary: "${first?.postSummary?.substring(0, 80)}..."`);
       console.log(`      postContent: "${first?.postContent?.substring(0, 80)}..."`);
+      console.log(`      sectors: "${first?.sectors}"`);
+      console.log(`      stocks: ${first?.stocks?.length || 0} stock(s)`);
     }
     
     console.log(`\n   ✅ Successfully loaded ${items.length} payload item(s)\n`);
     return items;
   } catch (err) {
-    console.error(`\n   ❌ Failed to fetch payload:`, err.message);
+    console.error(`\n   ❌ Exception while fetching payload:`, err.message);
+    console.error(`   Error type:`, err.constructor.name);
+    console.error(`   Stack trace:`, err.stack);
     return [];
   }
 };
@@ -787,25 +769,6 @@ const run = async () => {
   });
 
   const page = await context.newPage();
-
-  // Set up network interception to capture payload.json throughout the entire session
-  console.log('Setting up network interception for payload.json...');
-  page._trumpDashboardPayload = null;
-  
-  page.on('response', async (response) => {
-    const url = response.url();
-    if (url.includes('payload.json') && url.includes('trump-dashboard')) {
-      console.log(`🎯 Intercepted payload.json request: ${url}`);
-      try {
-        const data = await response.json();
-        page._trumpDashboardPayload = data;
-        const items = Array.isArray(data?.trumpDashboardList) ? data.trumpDashboardList : [];
-        console.log(`✅ Captured payload with ${items.length} items`);
-      } catch (err) {
-        console.error(`❌ Failed to parse intercepted payload:`, err.message);
-      }
-    }
-  });
 
   try {
     await installNavigationGuard(page, siteUrl);
