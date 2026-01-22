@@ -158,7 +158,6 @@ const translateSummariesWithGemini = async (summaries) => {
       `The translations array MUST be the same length and order as the input array.\n\n` +
       `Input JSON:\n${JSON.stringify({ items: payload }, null, 0)}`;
 
-    // Max attempts = try each key at least twice
     const maxAttempts = geminiApiKeys.length * 3;
     
     if (attemptCount >= maxAttempts) {
@@ -166,11 +165,14 @@ const translateSummariesWithGemini = async (summaries) => {
     }
 
     try {
-      // Find next available (non-rate-limited) key
       const keyIndex = findAvailableKey();
       const model = geminiClients[keyIndex].getGenerativeModel({ model: geminiModelName });
       
-      console.log(`Using Gemini API key #${keyIndex + 1}/${geminiApiKeys.length} for translation (attempt ${attemptCount + 1}/${maxAttempts})`);
+      console.log(`\n📡 Gemini API Call #${attemptCount + 1}`);
+      console.log(`   Using API key: #${keyIndex + 1}/${geminiApiKeys.length}`);
+      console.log(`   Model: ${geminiModelName}`);
+      console.log(`   Translating ${chunk.length} item(s) to ${translateTo}`);
+      console.log(`   Input preview: "${chunk[0]?.substring(0, 60)}..."`);
       
       const result = await model.generateContent({
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -186,33 +188,34 @@ const translateSummariesWithGemini = async (summaries) => {
 
       const translations = Array.isArray(parsed?.translations) ? parsed.translations : [];
       if (translations.length !== chunk.length) throw new Error('Gemini returned unexpected translation count.');
+      
+      console.log(`   ✅ Translation successful`);
+      console.log(`   Output preview: "${translations[0]?.substring(0, 60)}..."\n`);
+      
       return translations.map((t) => String(t ?? '').trim());
     } catch (err) {
-      // Handle rate limit errors - mark key as limited and try next key
+      console.log(`   ❌ Translation failed: ${err.message}\n`);
+      
       if (isGeminiRateLimitError(err)) {
-        // Find which key was just used (it's the one before current in cycle)
         const failedKeyIndex = (currentKeyIndex - 1 + geminiApiKeys.length) % geminiApiKeys.length;
         
-        // Only mark as rate-limited if not already marked
         if (!isKeyRateLimited(failedKeyIndex)) {
           markKeyAsRateLimited(failedKeyIndex);
         }
         
-        // Check if all keys are now rate-limited
         const allLimited = geminiApiKeys.every((_, idx) => isKeyRateLimited(idx));
         if (allLimited) {
           console.warn(`⚠️  All ${geminiApiKeys.length} API key(s) are rate-limited. Add more keys or wait for rate limits to reset.`);
         }
         
-        console.log(`Switching to next API key...`);
-        await sleep(1000); // Small delay before retry
+        console.log(`   🔄 Switching to next API key...`);
+        await sleep(1000);
         return translateChunk(chunk, attemptCount + 1);
       }
       
-      // Handle service errors (503, 500, overloaded) - don't retry, fail fast
       if (isGeminiServiceError(err)) {
-        console.warn(`Gemini service error (${err.status || 'unknown'}): ${err.message}`);
-        throw err; // Throw to trigger fallback to untranslated
+        console.warn(`   ⚠️  Gemini service error (${err.status || 'unknown'}): ${err.message}`);
+        throw err;
       }
       
       throw err;
@@ -220,20 +223,31 @@ const translateSummariesWithGemini = async (summaries) => {
   };
 
   try {
+    console.log(`\n🌐 Starting Gemini translation process`);
+    console.log(`   Total items: ${summaries.length}`);
+    console.log(`   Batch size: ${geminiBatchSize}`);
+    console.log(`   Batches: ${Math.ceil(summaries.length / geminiBatchSize)}`);
+    
     const out = [];
     for (let i = 0; i < summaries.length; i += geminiBatchSize) {
       const chunk = summaries.slice(i, i + geminiBatchSize);
+      console.log(`\n📦 Processing batch ${Math.floor(i / geminiBatchSize) + 1}/${Math.ceil(summaries.length / geminiBatchSize)}`);
+      
       const translated = await translateChunk(chunk);
       out.push(...translated);
+      
       if (i + geminiBatchSize < summaries.length && geminiMinDelayMs > 0) {
+        console.log(`   ⏱️  Waiting ${geminiMinDelayMs}ms before next batch...`);
         await sleep(geminiMinDelayMs);
       }
     }
+    
+    console.log(`\n✅ Translation complete: ${out.length}/${summaries.length} items translated\n`);
     return out;
   } catch (err) {
-    console.error('Translation failed:', err.message);
-    console.warn('⚠️  Falling back to untranslated text');
-    return null; // Return null to signal fallback needed
+    console.error(`\n❌ Translation failed: ${err.message}`);
+    console.warn('⚠️  Falling back to untranslated text\n');
+    return null;
   }
 };
 
@@ -416,53 +430,6 @@ const createContextOptions = () => ({
 
 const dismissOverlaysStrict = async (page) => {
   await page.keyboard.press('Escape').catch(() => {});
-};
-
-const closeTipRanksPopup = async (page) => {
-  // Try multiple methods to close popups/modals
-  
-  // Method 1: X button that contains icon-cross with specific positioning
-  const xButtonWithIcon = page.locator('button:has(i.icon-cross.positionabsolute.anchortopRight)');
-  const count = await xButtonWithIcon.count();
-  for (let i = 0; i < count; i++) {
-    const btn = xButtonWithIcon.nth(i);
-    if (await btn.isVisible().catch(() => false)) {
-      await btn.click({ timeout: 1500, force: true }).catch(() => {});
-      await page.waitForTimeout(200);
-    }
-  }
-  
-  // Method 2: Any button with icon-cross
-  const closeBtn = page.locator('button:has(i.icon-cross)');
-  const closeCount = await closeBtn.count();
-  for (let i = 0; i < closeCount; i++) {
-    const btn = closeBtn.nth(i);
-    if (await btn.isVisible().catch(() => false)) {
-      await btn.click({ timeout: 1500, force: true }).catch(() => {});
-      await page.waitForTimeout(200);
-    }
-  }
-  
-  // Method 3: Direct icon-cross click (sometimes the icon itself is clickable)
-  const closeIcons = page.locator('i.icon-cross');
-  const iconCount = await closeIcons.count();
-  for (let i = 0; i < iconCount; i++) {
-    const icon = closeIcons.nth(i);
-    if (await icon.isVisible().catch(() => false)) {
-      await icon.click({ timeout: 1500, force: true }).catch(() => {});
-      await page.waitForTimeout(200);
-    }
-  }
-  
-  // Method 4: X button in top-right of modal (common pattern)
-  const xButton = page.locator('button[aria-label*="close"], button[aria-label*="Close"]');
-  if (await xButton.isVisible().catch(() => false)) {
-    await xButton.click({ timeout: 1500, force: true }).catch(() => {});
-    await page.waitForTimeout(150);
-  }
-  
-  // Method 5: Press Escape key multiple times
-  await page.keyboard.press('Escape').catch(() => {});
   await page.waitForTimeout(100);
   await page.keyboard.press('Escape').catch(() => {});
 };
@@ -503,193 +470,86 @@ const waitForReactTable = async (page) => {
   return scroller;
 };
 
-// NEW: Extract full tweet text by hovering over the icon button
-const extractFullTweetFromTooltip = async (page, rowIndex) => {
-  try {
-    // Aggressively close any popups before hovering
-    await closeTipRanksPopup(page);
-    await page.waitForTimeout(100);
-    
-    // Find the row group first to scroll it into view
-    const rowGroup = page.locator(`.rt-tbody .rt-tr-group:nth-child(${rowIndex + 1})`).first();
-    const rowExists = await rowGroup.count();
-    if (rowExists === 0) {
-      console.log(`Row ${rowIndex}: Row not found in DOM`);
-      return '';
-    }
-
-    // Scroll the entire row into the CENTER of the viewport to avoid ads at bottom
-    await page.evaluate((idx) => {
-      const row = document.querySelectorAll('.rt-tbody .rt-tr-group')[idx];
-      if (row) {
-        row.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
-      }
-    }, rowIndex);
-    await page.waitForTimeout(300);
-    
-    // Find the VISIBLE button with icon-twoBubbles (not the mobile hidden one)
-    // There are two buttons - we want the one with class mobile_displaynone (visible on desktop)
-    let button = rowGroup.locator('button:has(i.icon-twoBubbles).mobile_displaynone').first();
-    let buttonCount = await button.count();
-    
-    if (buttonCount === 0) {
-      // Fallback: try any button with icon-twoBubbles
-      button = rowGroup.locator('button:has(i.icon-twoBubbles)').last(); // Use .last() to get the visible one
-      buttonCount = await button.count();
-    }
-    
-    if (buttonCount === 0) {
-      console.log(`Row ${rowIndex}: No full text button found`);
-      return '';
-    }
-
-    // Get button properties
-    const buttonProps = await button.evaluate((btn) => ({
-      visible: btn.offsetParent !== null,
-      display: window.getComputedStyle(btn).display,
-      visibility: window.getComputedStyle(btn).visibility,
-      opacity: window.getComputedStyle(btn).opacity,
-      className: btn.className
-    }));
-
-    if (!buttonProps.visible) {
-      console.log(`Row ${rowIndex}: Button not actually visible (offsetParent is null)`);
-      return '';
-    }
-
-    // Get bounding box
-    const box = await button.boundingBox();
-    if (!box) {
-      console.log(`Row ${rowIndex}: Could not get button bounding box`);
-      return '';
-    }
-    
-    console.log(`Row ${rowIndex}: Forcing hover over button...`);
-    await button.dispatchEvent('pointerenter').catch(() => {});
-    await button.dispatchEvent('mouseenter').catch(() => {});
-    await button.dispatchEvent('mouseover').catch(() => {});
-    await button.dispatchEvent('mousemove').catch(() => {});
-    await page.waitForTimeout(200);
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.waitForTimeout(300); // Wait for tooltip to appear
-
-    const clean = (text) => String(text || '').replace(/\s+/g, ' ').trim();
-
-    const tippyContent = await button.evaluate((btn) => {
-      const instance = btn?._tippy;
-      if (!instance) return '';
-      try {
-        instance.show?.();
-      } catch {}
-      const content = instance.props?.content;
-      if (!content) return '';
-      if (typeof content === 'string') return content;
-      return content.textContent || '';
-    });
-
-    if (tippyContent) {
-      return clean(tippyContent);
-    }
-
-    const directContent = await button.evaluate((btn) => {
-      return (
-        btn.getAttribute('data-tippy-content') ||
-        btn.getAttribute('title') ||
-        btn.getAttribute('aria-label') ||
-        ''
-      );
-    });
-
-    if (directContent) {
-      return clean(directContent);
-    }
-
-    const fullTweet = await page.evaluate(() => {
-      const clean = (text) => String(text || '').replace(/\s+/g, ' ').trim();
-      // Extract text from the tooltip in the DOM
-      // Find the tippy tooltip that's currently visible
-      const tooltip = document.querySelector('[data-tippy-root] .tippy-box[data-state="visible"] span[title]');
-      if (tooltip) {
-        return clean(tooltip.getAttribute('title') || '');
-      }
-      
-      // Fallback: look for any visible tippy tooltip
-      const anyTooltip = document.querySelector('[data-tippy-root] span[title]');
-      if (anyTooltip) {
-        return clean(anyTooltip.getAttribute('title') || '');
-      }
-      
-      // Another fallback: check the tippy content directly
-      const tippyContent = document.querySelector('[data-tippy-root] .tippy-content span');
-      if (tippyContent) {
-        return clean(tippyContent.getAttribute('title') || tippyContent.textContent || '');
-      }
-      
-      return '';
-    });
-
-    if (fullTweet) {
-      console.log(`Row ${rowIndex}: ✓ Extracted (${fullTweet.length} chars)`);
-    } else {
-      console.log(`Row ${rowIndex}: ✗ No tooltip found`);
-    }
-
-    // Hover out to dismiss the tooltip before moving to next row
-    await button.dispatchEvent('mouseleave').catch(() => {});
-    await button.dispatchEvent('mouseout').catch(() => {});
-    await page.mouse.move(0, 0);
-    await page.waitForTimeout(200); // Wait for tooltip to disappear
-
-    return fullTweet;
-  } catch (err) {
-    console.warn(`Row ${rowIndex}: Error:`, err.message);
-    // Try to hover out even on error
-    await page.mouse.move(0, 0).catch(() => {});
-    return '';
-  }
-};
-
 const buildPayloadIndex = (payloadItems) => {
   const clean = (text) => String(text || '').replace(/\s+/g, ' ').trim();
-  const index = new Map();
+  const timeIndex = new Map(); // Map: time -> array of items
+  const summaryIndex = new Map(); // Map: summary -> item
 
   for (const item of payloadItems || []) {
     const time = clean(item?.postTime);
     const summary = clean(item?.postSummary);
     if (!time || !summary) continue;
-    const key = `${time}|${summary}`;
-    if (!index.has(key)) {
-      index.set(key, item);
+    
+    // Index by time (multiple items can have same time)
+    if (!timeIndex.has(time)) {
+      timeIndex.set(time, []);
     }
+    timeIndex.get(time).push(item);
+    
+    // Index by summary (should be unique)
+    summaryIndex.set(summary, item);
   }
 
-  return { index, clean };
+  return { timeIndex, summaryIndex, clean };
 };
 
-const findPayloadMatch = (row, payloadItems, payloadIndex, clean) => {
+const findPayloadMatch = (row, { timeIndex, summaryIndex, clean }) => {
   const rowTime = clean(row?.time);
   const rowSummary = clean(row?.summary);
   if (!rowTime || !rowSummary) return null;
 
-  const exactKey = `${rowTime}|${rowSummary}`;
-  if (payloadIndex.has(exactKey)) return payloadIndex.get(exactKey);
+  // Strategy 1: Exact summary match (most reliable)
+  if (summaryIndex.has(rowSummary)) {
+    return summaryIndex.get(rowSummary);
+  }
 
-  let fallback = null;
-  for (const item of payloadItems || []) {
-    const itemTime = clean(item?.postTime);
-    const itemSummary = clean(item?.postSummary);
-    if (!itemTime || !itemSummary) continue;
-
-    if (itemTime === rowTime && (itemSummary.startsWith(rowSummary) || rowSummary.startsWith(itemSummary))) {
-      return item;
-    }
-
-    if (!fallback && itemTime === rowTime) {
-      fallback = item;
+  // Strategy 2: Fuzzy summary match
+  // Sometimes the UI truncates summaries, so check if row summary is a prefix
+  for (const [fullSummary, item] of summaryIndex.entries()) {
+    if (fullSummary.startsWith(rowSummary) || rowSummary.startsWith(fullSummary)) {
+      const itemTime = clean(item?.postTime);
+      // Also verify time matches to avoid false positives
+      if (itemTime === rowTime) {
+        return item;
+      }
     }
   }
 
-  return fallback;
+  // Strategy 3: Match by time only (when there's only one item at that time)
+  const itemsAtTime = timeIndex.get(rowTime);
+  if (itemsAtTime && itemsAtTime.length === 1) {
+    return itemsAtTime[0];
+  }
+
+  // Strategy 4: Match by time with fuzzy summary comparison
+  if (itemsAtTime && itemsAtTime.length > 1) {
+    // Find the item with most similar summary
+    let bestMatch = null;
+    let bestScore = 0;
+    
+    for (const item of itemsAtTime) {
+      const itemSummary = clean(item?.postSummary);
+      if (!itemSummary) continue;
+      
+      // Simple similarity: count matching words
+      const rowWords = new Set(rowSummary.toLowerCase().split(/\s+/));
+      const itemWords = itemSummary.toLowerCase().split(/\s+/);
+      const matchingWords = itemWords.filter(w => rowWords.has(w)).length;
+      const score = matchingWords / Math.max(rowWords.size, itemWords.length);
+      
+      if (score > bestScore) {
+        bestScore = score;
+        bestMatch = item;
+      }
+    }
+    
+    // If we have a reasonable match (>50% word overlap), use it
+    if (bestMatch && bestScore > 0.5) {
+      return bestMatch;
+    }
+  }
+
+  return null;
 };
 
 const extractAllCurrentlyLoadedRows = async (page, payloadItems = []) => {
@@ -700,7 +560,6 @@ const extractAllCurrentlyLoadedRows = async (page, payloadItems = []) => {
     const extractTickersFromCell = (cell) => {
       if (!cell) return [];
 
-      // Preferred: symbols are in <a href="/stocks/xxx"><span>SYM</span></a> and /etf/xxx
       const anchors = Array.from(cell.querySelectorAll('a[href^="/stocks/"], a[href^="/etf/"]'));
       const syms = anchors
         .map((a) => clean(a.textContent))
@@ -708,7 +567,6 @@ const extractAllCurrentlyLoadedRows = async (page, payloadItems = []) => {
 
       if (syms.length > 0) return syms;
 
-      // Fallback: try to parse patterns like "NWSA-1.45%NXST-2.11%" -> ["NWSA","NXST"]
       const txt = clean(cell.textContent);
       const matches = txt.match(/[A-Z]{1,6}(?=[\-\s]|$)/g) || [];
       return matches;
@@ -742,62 +600,37 @@ const extractAllCurrentlyLoadedRows = async (page, payloadItems = []) => {
     });
   });
 
-  // Now extract full tweet text for each row by hovering
-  console.log(`Extracting full tweets for ${rowsData.length} rows...`);
+  console.log(`Extracting full tweets for ${rowsData.length} rows from payload...`);
   
-  // Scroll back to the top of the table to ensure first rows are visible
-  const firstRow = page.locator('.rt-tbody .rt-tr-group').first();
-  await firstRow.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => {});
-  await page.waitForTimeout(500);
+  const indices = buildPayloadIndex(payloadItems);
   
-  // Debug: Check the structure of the first row
-  const firstRowDebug = await page.evaluate(() => {
-    const row = document.querySelector('.rt-tbody .rt-tr-group .rt-tr');
-    if (!row) return 'No row found';
-    const cells = Array.from(row.querySelectorAll('.rt-td'));
-    return cells.map((cell, i) => ({
-      index: i,
-      classes: cell.className,
-      hasButton: cell.querySelector('button') !== null,
-      buttonClasses: cell.querySelector('button')?.className || 'no button',
-      html: cell.innerHTML.substring(0, 150)
-    }));
-  });
-  console.log('First row structure:', JSON.stringify(firstRowDebug, null, 2));
-  
-  const { index: payloadIndex, clean: cleanPayload } = buildPayloadIndex(payloadItems);
+  let payloadMatchCount = 0;
+  let noMatchCount = 0;
 
   for (let i = 0; i < rowsData.length; i++) {
-    await closeTipRanksPopup(page);
-
-    const payloadMatch = findPayloadMatch(rowsData[i], payloadItems, payloadIndex, cleanPayload);
+    const payloadMatch = findPayloadMatch(rowsData[i], indices);
+    
     if (payloadMatch?.postContent) {
-      rowsData[i].fullTweet = cleanPayload(payloadMatch.postContent);
-      console.log(`Row ${i}: ✓ Extracted from payload (${rowsData[i].fullTweet.length} chars)`);
-      continue;
-    }
-    
-    // Set a timeout for each row extraction to prevent hanging
-    try {
-      const fullTweet = await Promise.race([
-        extractFullTweetFromTooltip(page, i),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout')), 10000)
-        )
-      ]);
-      rowsData[i].fullTweet = fullTweet;
-    } catch (err) {
-      console.warn(`Row ${i}: Timed out or failed, skipping full tweet`);
+      rowsData[i].fullTweet = indices.clean(payloadMatch.postContent);
+      payloadMatchCount++;
+      console.log(`Row ${i}: ✓ Matched (${rowsData[i].fullTweet.length} chars)`);
+      console.log(`  Full tweet: "${rowsData[i].fullTweet}"`);
+    } else {
       rowsData[i].fullTweet = '';
-    }
-    
-    // Small delay between rows to avoid overwhelming the page
-    if (i < rowsData.length - 1) {
-      await page.waitForTimeout(200);
+      noMatchCount++;
+      console.log(`Row ${i}: ✗ No payload match found`);
+      console.log(`  Time: "${rowsData[i].time}", Summary: "${rowsData[i].summary.substring(0, 50)}..."`);
     }
   }
   
-  console.log('Full tweet extraction complete');
+  console.log(`Full tweet extraction complete:`);
+  console.log(`  - Matched: ${payloadMatchCount}/${rowsData.length}`);
+  console.log(`  - No match: ${noMatchCount}/${rowsData.length}`);
+  
+  if (noMatchCount > 0) {
+    console.warn(`⚠️  ${noMatchCount} row(s) could not be matched to payload data`);
+  }
+  
   return rowsData;
 };
 
@@ -831,8 +664,6 @@ const clickShowMoreUntil = async (page, targetCount) => {
   // click show more until enough rows loaded or button gone
   let prevCount = await getRowCount(page);
   for (let i = 0; i < 30; i++) {
-    await closeTipRanksPopup(page);
-
     const btn = page.locator('button[data-id="show_more"]').first();
     const visible = await btn.isVisible().catch(() => false);
     if (!visible) break;
@@ -840,7 +671,6 @@ const clickShowMoreUntil = async (page, targetCount) => {
     // ensure it is on screen and clickable
     await btn.scrollIntoViewIfNeeded().catch(() => {});
     await page.waitForTimeout(200);
-    await closeTipRanksPopup(page);
 
     // click and wait for row count to increase
     await btn.click({ timeout: 3000 }).catch(() => {});
@@ -849,7 +679,6 @@ const clickShowMoreUntil = async (page, targetCount) => {
     let grew = false;
     for (let w = 0; w < 20; w++) {
       await page.waitForTimeout(250);
-      await closeTipRanksPopup(page);
       const now = await getRowCount(page);
       if (now > prevCount) {
         prevCount = now;
@@ -895,17 +724,16 @@ const run = async () => {
 
     await page.waitForLoadState('networkidle').catch(() => {});
     
-    // Aggressively dismiss all overlays and popups multiple times
+    // Dismiss overlays
     for (let i = 0; i < 3; i++) {
       await dismissOverlaysStrict(page);
-      await closeTipRanksPopup(page);
       await page.waitForTimeout(300);
     }
 
     await scrollToRecentTweets(page);
     await waitForReactTable(page);
 
-    // ✅ Load enough rows by clicking Show More
+    // Load enough rows by clicking Show More
     await clickShowMoreUntil(page, maxMessages);
 
     const payloadItems = await fetchTrumpDashboardPayload(page);
