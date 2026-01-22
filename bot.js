@@ -564,9 +564,14 @@ const extractFullTweetFromTooltip = async (page, rowIndex) => {
       return '';
     }
     
-    console.log(`Row ${rowIndex}: Hovering over button...`);
+    console.log(`Row ${rowIndex}: Forcing hover over button...`);
+    await button.dispatchEvent('pointerenter').catch(() => {});
+    await button.dispatchEvent('mouseenter').catch(() => {});
+    await button.dispatchEvent('mouseover').catch(() => {});
+    await button.dispatchEvent('mousemove').catch(() => {});
+    await page.waitForTimeout(200);
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.waitForTimeout(800); // Wait for tooltip to appear
+    await page.waitForTimeout(600); // Wait for tooltip to appear
 
     // Extract text from the tooltip
     const fullTweet = await page.evaluate(() => {
@@ -598,6 +603,8 @@ const extractFullTweetFromTooltip = async (page, rowIndex) => {
     }
 
     // Hover out to dismiss the tooltip before moving to next row
+    await button.dispatchEvent('mouseleave').catch(() => {});
+    await button.dispatchEvent('mouseout').catch(() => {});
     await page.mouse.move(0, 0);
     await page.waitForTimeout(200); // Wait for tooltip to disappear
 
